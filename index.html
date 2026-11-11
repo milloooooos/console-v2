@@ -83,6 +83,10 @@ tbody tr.sel td{background:var(--brand-soft)}
 .planbar input[type=date]:focus{outline:none;border-color:var(--brand)}
 .planbar .btn{padding:4px 9px;font-size:12px}
 .planbar .btn.on{background:var(--brand);color:#fff;border-color:var(--brand)}
+.planbar #ptHospWrap{display:inline-block;min-width:150px}
+.planbar #ptAsOf{width:142px}
+.planbar #ptResult{width:150px;padding:5px 7px;font-size:12.5px;border:1px solid var(--line);border-radius:7px;background:#fff}
+.planbar-note{padding:6px 14px;font-size:11.5px;color:var(--muted);background:#f7f9fb;border-bottom:1px solid var(--line)}
 .cards .card[data-go]{cursor:pointer;transition:transform .12s,box-shadow .12s}
 .cards .card[data-go]:hover{transform:translateY(-2px);box-shadow:0 8px 22px rgba(30,45,80,.12)}
 .cards .card[data-go]:hover .l{color:var(--brand)}
@@ -231,7 +235,7 @@ textarea:focus{outline:none;border-color:var(--brand)}
 <body>
 <div class="top">
   <div class="top-in">
-    <div class="brand">达必妥患者管理与药师随访工作台<small>V2.0</small><span style="font-size:11px;color:var(--muted2);margin-left:8px;font-weight:400" title="构建时间，用来确认你打开的是不是最新版">build 1111.0925</span></div>
+    <div class="brand">达必妥患者管理与药师随访工作台<small>V2.0</small><span style="font-size:11px;color:var(--muted2);margin-left:8px;font-weight:400" title="构建时间，用来确认你打开的是不是最新版">build 1111.0948</span></div>
     <div class="storebox">
       <span>门店</span><select id="storeSel"></select>
       <span id="todayLbl" class="hint"></span>
@@ -333,9 +337,19 @@ textarea:focus{outline:none;border-color:var(--brand)}
         <button class="btn ghost sm" data-plan="thisWeek">本周</button>
         <button class="btn ghost sm" data-plan="nextWeek">下周</button>
         <button class="btn ghost sm" data-plan="thisMonth">本月</button>
+        <button class="btn ghost sm" data-plan="lastMonth">上月</button>
         <button class="btn ghost sm" data-plan="clear">清空</button>
-        <span class="hint" id="ptPlanNote">留空 = 不限；只填一边也可以</span>
+        <span id="ptHospWrap"></span>
+        <span class="hint">回溯到</span>
+        <input type="date" id="ptAsOf" title="只用这一天及以前的销售重算，用来回看当时情况">
+        <select id="ptResult" title="这批应购的人，后来到底有没有回来买">
+          <option value="">后续购药：全部</option>
+          <option value="bought">后来已买</option>
+          <option value="miss">至今没买</option>
+        </select>
+        <span class="hint" id="ptPlanNote"></span>
       </div>
+      <div class="planbar-note" id="ptAsOfNote">只看当前？「回溯到」留空。<b>回看 10 月</b>：区间选 10-01~10-31，回溯到填 2026-10-31，系统只用当天及以前的销售重算当时的应购日（按当前周期回算，属近似值）。「后续购药」看的是这批人后来有没有回来买。</div>
       <div class="tw"><table><thead><tr>
         <th>患者 / 会员号</th><th>门店 / 医院 · 医生</th><th class="num">最近购药</th>
         <th class="num">预计下次购药</th><th class="num">超期</th><th>购药状态</th><th>随访状态</th><th>复购意向</th><th>操作</th>
@@ -1343,20 +1357,60 @@ function ptFollowMatch(p, arr){
     return false;
   });
 }
+/* ---------- 历史视角：只用 cutoff 当天及以前的销售，重算"当时"的应购日 ----------
+   例：回溯到 2026-10-31，就假装今天是 10/31，患者的末次购药、支数、医院、应购日、超期
+   全部按 10/31 之前的数据算，11 月发生的购药不会掺进来。 */
+function histView(p, cutoff){
+  var list=salesOf(p).filter(function(s){ return s.date<=cutoff; });
+  if(!list.length) return null;                    // 当时还没在本店买过 → 不进名单
+  var last=list[0];                                // salesOf 已按日期降序
+  var q={}; for(var k in p) q[k]=p[k];
+  q.lastDate=last.date; q.lastBranches=last.branches; q.lastBoxes=last.boxQty;
+  q.store=last.store||p.store; q.hosp=last.hosp||p.hosp; q.doc=last.doc||p.doc;
+  q.firstDate=list[list.length-1].date; q.visits=list.length;
+  q.totalBranches=list.reduce(function(n,s){ return n+(s.branches||0); },0);
+  q.planned=last.date+Math.round(last.branches*p.cycle)*DAY;   // 历史视角忽略'只改这一次'的手工日期
+  q.overdue=days(cutoff,q.planned);
+  if(q.overdue>=S.cfg.dropFrom) q.buyStatus='已脱落';
+  else if(q.overdue>=S.cfg.riskFrom) q.buyStatus='有脱落风险';
+  else if(q.overdue>0) q.buyStatus='已经超期';
+  else if(q.planned-cutoff<=S.cfg.soonDays*DAY) q.buyStatus='即将到期';
+  else q.buyStatus='正常';
+  q._hist=true; q._cutoff=cutoff; q._sales=list;
+  return q;
+}
+/* 后续购药：应购日之后（含回溯日之后）有没有真的来买。
+   历史视角下 q.planned 由"回溯日之前的末次购药"推出，必然晚于当时所有销售，
+   所以这条判定的实际含义就是：这批当时没来的人，后来（11 月及以后）回来买了吗。 */
+function boughtAfterPlan(q){
+  if(q.planned==null) return false;
+  return salesOf(q).some(function(s){ return s.date>=q.planned; });
+}
+
 /* 患者档案的当前筛选结果（表格与导出共用同一份，避免"看到 19 人、导出 371 行"） */
 function ptFiltered(){
   var q=($('#ptSearch').value||'').trim().toLowerCase();
-  var rkArr=S.ptRisk||[], flArr=S.ptFollow||[];
+  var rkArr=S.ptRisk||[], flArr=S.ptFollow||[], hs=S.ptHosp||[];
   var scope=$('#ptScope')? $('#ptScope').value : 'own';
   var base = scope==='hist'
     ? S.patients.filter(function(p){ return inStore(p,S.store) && p.visits>0; })
     : patsShown();
-  // 「A~B 这段时间该买药的人」：按预计下次购药日落在区间内筛
+  // 回溯日：不填=当前视角；填了=按当天及以前的销售重算"当时"
+  var asOfEl=$('#ptAsOf');
+  var asOf=asOfEl? parseD(asOfEl.value) : null;
+  var cutoff=asOf!=null? asOf : S.today;
+  var list = asOf!=null
+    ? base.map(function(p){ return histView(p,asOf); }).filter(Boolean)
+    : base.slice();
+  // 「A~B 这段时间该买药的人」：按（历史或当前）预计下次购药日落在区间内筛
   var pfEl=$('#ptPlanFrom'), ptEl=$('#ptPlanTo');
   var pf=pfEl? parseD(pfEl.value) : null;
   var pt=ptEl? parseD(ptEl.value) : null;
-  return base.filter(function(p){
+  var resEl=$('#ptResult');
+  var res=resEl? resEl.value : '';
+  return list.filter(function(p){
     if(q && (p.name+' '+p.phone+' '+keyOfPat(p)+' '+p.hosp+' '+p.doc).toLowerCase().indexOf(q)<0) return false;
+    if(hs.length && hs.indexOf(p.hosp)<0) return false;
     if(!ptRiskMatch(p,rkArr)) return false;
     if(!ptFollowMatch(p,flArr)) return false;
     if(pf!=null || pt!=null){
@@ -1364,31 +1418,52 @@ function ptFiltered(){
       if(pf!=null && p.planned<pf) return false;
       if(pt!=null && p.planned>pt) return false;
     }
+    if(res){
+      if(p.planned==null) return false;
+      var got=boughtAfterPlan(p);
+      if(res==='bought' && !got) return false;
+      if(res==='miss'   &&  got) return false;
+    }
     return true;
   }).sort(function(a,b){ return (b.overdue||-9999)-(a.overdue||-9999); });
 }
 
 function renderPatients(tablesOnly){
-  var rkArr=S.ptRisk||[], flArr=S.ptFollow||[];
+  var rkArr=S.ptRisk||[], flArr=S.ptFollow||[], hs=S.ptHosp||[];
   if(!tablesOnly){
-    var w1=$('#ptRiskWrap'), w2=$('#ptFollowWrap');
+    var w1=$('#ptRiskWrap'), w2=$('#ptFollowWrap'), w3=$('#ptHospWrap');
     if(w1){ w1.innerHTML=mselHtml('ptRisk','全部购药状态',PT_RISK_OPTS,rkArr);
             mselBind('ptRisk',function(v){ S.ptRisk=v; renderPatients(true); }); }
     if(w2){ w2.innerHTML=mselHtml('ptFollow','全部随访',PT_FOLLOW_OPTS,flArr);
             mselBind('ptFollow',function(v){ S.ptFollow=v; renderPatients(true); }); }
+    if(w3){
+      var hl=[]; patsShown().forEach(function(p){ if(p.hosp && hl.indexOf(p.hosp)<0) hl.push(p.hosp); });
+      hl.sort();
+      w3.innerHTML=mselHtml('ptHosp','全部医院',hl.map(function(x){return {v:x,l:x};}),S.ptHosp||[]);
+      mselBind('ptHosp',function(v){ S.ptHosp=v; renderPatients(true); });
+    }
   }
   var rows=ptFiltered();
   var pfEl=$('#ptPlanFrom'), ptEl=$('#ptPlanTo');
   var pf=pfEl? parseD(pfEl.value) : null;
   var pt=ptEl? parseD(ptEl.value) : null;
   var rngTxt='';
+  var asOfEl=$('#ptAsOf');
+  var asOf=asOfEl? parseD(asOfEl.value) : null;
+  if(asOf!=null) rngTxt+='历史视角（截至 '+fmtD(asOf)+'）· ';
   if(pf!=null || pt!=null){
-    rngTxt='预计购药 '+(pf!=null?fmtD(pf):'不限')+' ~ '+(pt!=null?fmtD(pt):'不限')+' · ';
+    rngTxt+='预计购药 '+(pf!=null?fmtD(pf):'不限')+' ~ '+(pt!=null?fmtD(pt):'不限')+' · ';
   }
+  var resEl=$('#ptResult');
+  if(resEl && resEl.value) rngTxt+=(resEl.value==='miss'?'至今没买':'后来已买')+' · ';
   $('#ptCnt').textContent=rngTxt+'共 '+rows.length+' 人';
+  var note=$('#ptPlanNote');
+  if(note) note.textContent = (hs.length? ('已选 '+hs.length+' 家医院 · 与其他条件同时满足')
+                                        : '留空 = 不限医院；只填一边日期也可以');
   $('#ptBody').innerHTML=rows.length? rows.map(function(p){
     return '<tr data-key="'+esc(p.key)+'">'+
-      '<td><b>'+esc(p.name||'—')+'</b><div class="mini">'+esc(keyOfPat(p))+'</div></td>'+
+      '<td><b>'+esc(p.name||'—')+'</b>'+(p._hist?' <span class="tag t-gray">历史</span>':'')+
+        '<div class="mini">'+esc(keyOfPat(p))+'</div></td>'+
       '<td>'+esc(p.store||'—')+'<div class="mini">'+esc(p.hosp||'')+(p.doc?' · '+esc(p.doc):'')+'</div></td>'+
       '<td class="num">'+fmtD(p.lastDate)+'</td>'+
       '<td class="num">'+fmtD(p.planned)+'</td>'+
@@ -2092,6 +2167,8 @@ function exportPatients(){
   var tag = (pf||pt)
     ? ((pf? pf.slice(5):'起')+'至'+(pt? pt.slice(5):'今'))
     : fmtD(S.today);
+  var asOfV=$('#ptAsOf')? $('#ptAsOf').value : '';
+  if(asOfV) tag += '_截至'+asOfV.slice(5);        // 历史名单和当前名单不能同名
   XLSX.writeFile(aoaToBook(aoa,'患者档案',[12,10,16,18,10,12,8,8,14,12,8,10,12,18,10,24]),
     '达必妥_患者档案_'+tag+'_'+list.length+'人.xlsx');
 }
@@ -2494,6 +2571,7 @@ function setPlanRange(kind){
   if(kind==='thisWeek')  r=dimRange('thisWeek',S.today);
   if(kind==='nextWeek'){ var w=dimRange('thisWeek',S.today); r=[w[0]+7*DAY, w[1]+7*DAY]; }
   if(kind==='thisMonth') r=dimRange('thisMonth',S.today);
+  if(kind==='lastMonth') r=dimRange('lastMonth',S.today);
   if(r){ f.value=fmtD(r[0]); t2.value=fmtD(r[1]); }
   else { f.value=''; t2.value=''; }
   $$('.planbar .btn[data-plan]').forEach(function(b){ b.classList.toggle('on', b.dataset.plan===kind); });
@@ -2501,6 +2579,11 @@ function setPlanRange(kind){
 }
 $$('.planbar .btn[data-plan]').forEach(function(b){
   b.onclick=function(){ setPlanRange(b.dataset.plan); };
+});
+// 回溯日 / 购药结果：改了就重算（历史视角只用当天及以前的销售）
+['ptAsOf','ptResult'].forEach(function(id){
+  var el=$('#'+id); if(!el) return;
+  el.onchange=function(){ renderPatients(true); };
 });
 $('#btnExpPatients').onclick=exportPatients;
 
