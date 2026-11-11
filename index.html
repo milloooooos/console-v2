@@ -235,7 +235,7 @@ textarea:focus{outline:none;border-color:var(--brand)}
 <body>
 <div class="top">
   <div class="top-in">
-    <div class="brand">达必妥患者管理与药师随访工作台<small>V2.0</small><span style="font-size:11px;color:var(--muted2);margin-left:8px;font-weight:400" title="构建时间，用来确认你打开的是不是最新版">build 1111.1541</span></div>
+    <div class="brand">达必妥患者管理与药师随访工作台<small>V2.0</small><span style="font-size:11px;color:var(--muted2);margin-left:8px;font-weight:400" title="构建时间，用来确认你打开的是不是最新版">build 1111.1645</span></div>
     <div class="storebox">
       <span>门店</span><select id="storeSel"></select>
       <span id="todayLbl" class="hint"></span>
@@ -780,6 +780,7 @@ function buildPatients(sales, follow, roster, stored, today){
   function newP(id,name,phone){
     var p={ key:id, name:name||'', phone:phone||'', mids:[], alias:[], stores:{}, store:'', hosp:'', doc:'', diag:'',
       firstDate:null, lastDate:null, lastBranches:0, lastBoxes:0, totalBranches:0, visits:0, buyDates:{},
+      dayQty:{}, dayBox:{}, dayMeta:{},
       cycle:null, cycleSrc:'', cycleStatus:'', cycleAt:0, cycleHint:null, cycleHistory:[],
       planOverride:null, planned:null, overdue:null, buyStatus:'', intent:'', lastFollow:null, followCount:0,
       conflict:'', qaFlag:false, rosterRec:null, manual:null };
@@ -819,9 +820,29 @@ function buildPatients(sales, follow, roster, stored, today){
       if(s.diag) p.diag=s.diag;
     }
     p.totalBranches+=s.branches;
-    p.buyDates[fmtD(s.date)]=1;
+    var dk=fmtD(s.date);
+    p.buyDates[dk]=1;
+    p.dayQty[dk]=(p.dayQty[dk]||0)+s.branches;          // 同一天多笔下账 → 支数相加
+    p.dayBox[dk]=(p.dayBox[dk]||0)+(s.boxQty||0);
+    p.dayMeta[dk]=s;                                    // 该天最后一笔的医院/医生/门店
   });
-  Object.keys(map).forEach(function(k){ map[k].visits=Object.keys(map[k].buyDates).length; });
+  Object.keys(map).forEach(function(k){
+    var p=map[k];
+    p.visits=Object.keys(p.buyDates).length;
+    // 用"最后一个购药日"的合计支数作为末次购药支数
+    // 过滤掉净额 <=0 的日子（纯退货/冲销），避免把退货日当成一次购药
+    var ds=Object.keys(p.dayQty).filter(function(d){ return p.dayQty[d]>0; }).sort();
+    if(ds.length){
+      var ld=ds[ds.length-1], ldMs=parseD(ld);
+      if(!p.lastDate || p.lastDate<=ldMs){
+        p.lastDate=ldMs;
+        p.lastBranches=p.dayQty[ld];
+        p.lastBoxes=p.dayBox[ld]||0;
+        var m=p.dayMeta[ld];
+        if(m){ if(m.store)p.store=m.store; if(m.hosp)p.hosp=m.hosp; if(m.doc)p.doc=m.doc; if(m.diag)p.diag=m.diag; }
+      }
+    }
+  });
 
   // 3) 随访挂人
   follow.slice().sort(function(a,b){return a.date-b.date;}).forEach(function(f){
@@ -1400,11 +1421,20 @@ function ptFollowMatch(p, arr){
 function histView(p, cutoff){
   var list=salesOf(p).filter(function(s){ return s.date<=cutoff; });
   if(!list.length) return null;                    // 当时还没在本店买过 → 不进名单
-  var last=list[0];                                // salesOf 已按日期降序
+  // 同一天多笔下账要合并成"当天总药量"
+  var day={};
+  list.forEach(function(s){
+    var k=fmtD(s.date);
+    if(!day[k]) day[k]={date:s.date,branches:0,boxes:0,meta:s};
+    day[k].branches+=s.branches; day[k].boxes+=(s.boxQty||0);
+  });
+  var ds=Object.keys(day).filter(function(d){ return day[d].branches>0; }).sort();
+  if(!ds.length) return null;                      // 全是退货/冲销，不算有过购药
+  var last=day[ds[ds.length-1]];
   var q={}; for(var k in p) q[k]=p[k];
-  q.lastDate=last.date; q.lastBranches=last.branches; q.lastBoxes=last.boxQty;
-  q.store=last.store||p.store; q.hosp=last.hosp||p.hosp; q.doc=last.doc||p.doc;
-  q.firstDate=list[list.length-1].date; q.visits=list.length;
+  q.lastDate=last.date; q.lastBranches=last.branches; q.lastBoxes=last.boxes;
+  q.store=last.meta.store||p.store; q.hosp=last.meta.hosp||p.hosp; q.doc=last.meta.doc||p.doc;
+  q.firstDate=day[ds[0]].date; q.visits=ds.length;
   q.totalBranches=list.reduce(function(n,s){ return n+(s.branches||0); },0);
   q.planned=last.date+Math.round(last.branches*p.cycle)*DAY;   // 历史视角忽略'只改这一次'的手工日期
   q.overdue=days(cutoff,q.planned);
