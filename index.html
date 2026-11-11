@@ -235,7 +235,7 @@ textarea:focus{outline:none;border-color:var(--brand)}
 <body>
 <div class="top">
   <div class="top-in">
-    <div class="brand">达必妥患者管理与药师随访工作台<small>V2.0</small><span style="font-size:11px;color:var(--muted2);margin-left:8px;font-weight:400" title="构建时间，用来确认你打开的是不是最新版">build 1111.0948</span></div>
+    <div class="brand">达必妥患者管理与药师随访工作台<small>V2.0</small><span style="font-size:11px;color:var(--muted2);margin-left:8px;font-weight:400" title="构建时间，用来确认你打开的是不是最新版">build 1111.1521</span></div>
     <div class="storebox">
       <span>门店</span><select id="storeSel"></select>
       <span id="todayLbl" class="hint"></span>
@@ -271,12 +271,13 @@ textarea:focus{outline:none;border-color:var(--brand)}
       <span class="hint">医院</span>
       <span id="todoHospWrap"><select id="todoHosp"><option value="">全部医院</option></select></span>
       <span class="hint" id="todoHospCnt"></span>
+      <span id="todoKindWrap"></span>
       <div class="sp"></div>
-      <span class="hint">筛选只影响显示，重点名额仍按门店整店计算</span>
+      <span class="hint">筛选只影响显示；重点名额仍是每店 5 人</span>
     </div>
     <div class="panel" id="todoAPanel">
       <div class="ph"><h3>常规随访名单</h3>
-        <span class="hint">预计购药日在 7 天内（含已超期）的患者全部进入，不设上限</span>
+        <span class="hint">预计购药日从今天到下周日（含已超期 30 天内）的全部进入，不设上限</span>
         <div class="sp"></div><span class="hint" id="todoA_cnt"></span></div>
       <div class="tw"><table><thead><tr id="todoA_head"></tr></thead><tbody id="todoA_body"></tbody></table></div>
     </div>
@@ -906,10 +907,14 @@ function taskOf(store,type,key){
 }
 function routineList(store){
   var wk=weekKey(S.today), out=[];
+  // 窗口：从今天一直覆盖到"下周日"（含），保证药师能提前看到下一周要买药的人
+  var wkStart=parseD(wk), nextSun=wkStart+13*DAY;
+  var reach=days(nextSun, S.today);               // 今天到下周日还有几天
+  if(reach < S.cfg.soonDays) reach = S.cfg.soonDays;
   S.patients.forEach(function(p){
     if(!ownedBy(p,store)||p.planned==null) return;
     var od=days(S.today,p.planned);               // 正数=已超期
-    if(od < -S.cfg.soonDays) return;               // 还有 7 天以上才到期
+    if(od < -reach) return;                       // 比下周日还晚
     if(od > 30) return;                            // 超期 30 天以上进重点池
     if(p.lastFollow && p.lastFollow.intent==='yes' && p.lastFollow.date<=S.today) return; // 已承诺复购 -> 待验证
     var t=taskOf(store,'routine',p.key);
@@ -937,16 +942,24 @@ function focusCandidates(store){
   });
   return out.sort(function(a,b){ return b.score-a.score; });
 }
-function focusList(store){
+function focusList(store, hospArr){
   var wk=weekKey(S.today);
+  var hs=hospArr||[];
+  // 名额始终是每店 5 人；医院只决定"从谁的候选池里挑"，
+  // 之前是先取全店前 5 再按医院过滤 → 选的医院不在那 5 人里就空白，这是 bug 的根因。
+  var inH=function(p){ return !hs.length || hs.indexOf(p.hosp||'（未填医院）')>=0; };
   var picked=S.tasks.filter(function(t){ return t.week===wk&&t.store===store&&t.type==='focus'; });
   var routineKeys=routineList(store).map(function(x){ return x.p.key; });
-  if(picked.length){
-    return picked.map(function(t){ return S.patients.filter(function(p){return p.key===t.patient;})[0]; })
-      .filter(function(p){ return p && routineKeys.indexOf(p.key)<0; })
-      .map(function(p){ return {p:p, task:taskOf(store,'focus',p.key), score:0}; });
+  var pickedPats=picked.map(function(t){
+      return S.patients.filter(function(p){ return p.key===t.patient; })[0];
+    }).filter(function(p){ return p && routineKeys.indexOf(p.key)<0; });
+  var inScope=pickedPats.filter(inH);
+  if(inScope.length){
+    return inScope.map(function(p){ return {p:p, task:taskOf(store,'focus',p.key), score:0}; });
   }
-  return focusCandidates(store).filter(function(x){ return routineKeys.indexOf(x.p.key)<0; }).slice(0,5);
+  return focusCandidates(store)
+    .filter(function(x){ return inH(x.p) && routineKeys.indexOf(x.p.key)<0; })
+    .slice(0,5);
 }
 function promisedList(store){
   return S.patients.filter(function(p){
@@ -1193,11 +1206,23 @@ function focusKind(p){
   if(p.buyStatus==='已经超期')   return '<span class="tag t-warn">已经超期</span>';
   return '<span class="tag t-gray">'+(p.buyStatus||'—')+'</span>';
 }
-function todoKind(od){
-  if(od==null) return '<span class="tag t-gray">—</span>';
-  if(od<0)  return '<span class="tag t-teal">即将到期</span>';
-  if(od===0) return '<span class="tag t-warn">今天到期</span>';
-  if(od<=13) return '<span class="tag t-warn">已超期</span>';
+/* 常规名单的类型：本周到期 / 下周到期 / 今天到期 / 已超期 / 超期14天+ */
+var TODO_KINDS=['本周到期','下周到期','今天到期','已超期','超期14天+'];
+function kindOf(od, planned){
+  if(od==null) return '';
+  if(od>13)  return '超期14天+';
+  if(od>0)   return '已超期';
+  if(od===0) return '今天到期';
+  var wkStart=parseD(weekKey(S.today)), thisSun=wkStart+6*DAY;
+  return (planned!=null && planned>thisSun)? '下周到期' : '本周到期';
+}
+function todoKind(od, planned){
+  var k=kindOf(od, planned);
+  if(!k) return '<span class="tag t-gray">—</span>';
+  if(k==='本周到期') return '<span class="tag t-teal">本周到期</span>';
+  if(k==='下周到期') return '<span class="tag t-blue">下周到期</span>';
+  if(k==='今天到期') return '<span class="tag t-warn">今天到期</span>';
+  if(k==='已超期')   return '<span class="tag t-warn">已超期</span>';
   return '<span class="tag t-bad" title="超期 14 天以上，已进入脱落风险区间，但仍在常规随访窗口（≤30 天）">超期14天+</span>';
 }
 function todoRow(p,t,type,od,odColor){
@@ -1214,7 +1239,7 @@ function todoRow(p,t,type,od,odColor){
     '<td class="num">'+fmtD(p.lastDate)+'</td>'+
     '<td class="num">'+fmtD(p.planned)+'</td>'+
     '<td class="num" style="color:'+odColor+'">'+(od==null?'—':od)+'</td>'+
-    '<td>'+(type==='focus'? focusKind(p) : todoKind(od))+'</td>'+
+    '<td>'+(type==='focus'? focusKind(p) : todoKind(od, p.planned))+'</td>'+
     '<td>'+lastCell+'</td>'+
     '<td><select class="cyc-in" data-task="'+esc(p.key)+'"'+(type?' data-type="'+type+'"':'')+' style="width:96px">'+
       FOLLOW_ST.map(function(s){return '<option'+(t&&t.status===s?' selected':'')+'>'+s+'</option>';}).join('')+'</select></td>'+
@@ -1239,29 +1264,41 @@ function renderTodo(tablesOnly){
   }
   function inHosp(p){ return !cur.length || cur.indexOf(p.hosp||'（未填医院）')>=0; }
 
+  // 类型筛选（本周/下周到期、今天、已超期、超期14天+）
+  var kinds=(S.todoKind||[]).filter(function(k){ return TODO_KINDS.indexOf(k)>=0; });
+  S.todoKind=kinds;
+  var kwrap=tablesOnly? null : $('#todoKindWrap');
+  if(kwrap){
+    kwrap.innerHTML=mselHtml('todoKind','全部类型',
+      TODO_KINDS.map(function(k){ return {v:k,l:k}; }), kinds);
+    mselBind('todoKind',function(vals){ S.todoKind=vals; renderTodo(true); });
+  }
+  function inKind(x){ return !kinds.length || kinds.indexOf(kindOf(x.overdue, x.p.planned))>=0; }
+
   var routine=routineList(store).filter(function(x){ return inHosp(x.p); });
+  var routineAll=routine.slice();
+  routine=routine.filter(inKind);
   $('#todoA_head').innerHTML=head;
   $('#todoA_body').innerHTML=routine.length? routine.map(function(x){
     return todoRow(x.p,x.task,'',x.overdue, x.overdue>13?'var(--bad)':'inherit');
-  }).join('') : '<tr><td colspan="10" class="hint" style="padding:20px">本周没有常规待随访患者</td></tr>';
-  var cSoon=0,cToday=0,cOver=0,cLong=0;
-  routine.forEach(function(x){
-    var od=x.overdue;
-    if(od==null) return;
-    if(od<0) cSoon++; else if(od===0) cToday++; else if(od<=13) cOver++; else cLong++;
-  });
-  $('#todoA_cnt').innerHTML='共 '+routine.length+' 人'+(cur.length?('（'+esc(cur.join('、'))+'）'):'')+
-    '<span style="color:var(--muted2)"> · 即将到期 '+cSoon+(cToday?(' · 今天到期 '+cToday):'')+
-    ' · 已超期 '+cOver+' · 超期14天+ '+cLong+'</span>';
+  }).join('') : '<tr><td colspan="10" class="hint" style="padding:20px">'+
+      ((S.todoKind&&S.todoKind.length)?'当前筛选下没有患者，换个类型或清空医院筛选试试':'本周没有常规待随访患者')+'</td></tr>';
+  var cnt={}; TODO_KINDS.forEach(function(k){ cnt[k]=0; });
+  routine.forEach(function(x){ var k=kindOf(x.overdue,x.p.planned); if(k) cnt[k]=(cnt[k]||0)+1; });
+  var cond=[]; if(cur.length) cond.push(cur.join('、')); if(kinds.length) cond.push('已筛「'+kinds.join('、')+'」');
+  var parts=[]; TODO_KINDS.forEach(function(k){ if(cnt[k]) parts.push(k+' '+cnt[k]); });
+  $('#todoA_cnt').innerHTML='共 '+routine.length+' 人'+(cond.length?('（'+esc(cond.join(' · '))+'）'):'')+
+    (parts.length?('<span style="color:var(--muted2)"> · '+parts.join(' · ')+'</span>'):'');
   var hc=$('#todoHospCnt');
   if(hc) hc.textContent=cur.length? ('当前只看 '+cur.length+' 家：'+cur.join('、')) : ('共 '+harr.length+' 家医院');
 
-  var focus=focusList(store).filter(function(x){ return inHosp(x.p); });
+  var focus=focusList(store, cur);       // 名额仍 5 人，候选池按所选医院收窄
   $('#todoB_head').innerHTML=head;
   $('#todoB_body').innerHTML=focus.length? focus.map(function(x){
     return todoRow(x.p,x.task,'focus', x.p.overdue==null?null:x.p.overdue,'var(--bad)');
   }).join('') : '<tr><td colspan="10" class="hint" style="padding:20px">本周重点名单待生成（点「重新推荐」或「手动调整」）</td></tr>';
-  $('#todoB_cnt').textContent='名额 5 · 已选 '+focus.length+(cur?('（'+cur+'）'):'');
+  $('#todoB_cnt').textContent='名额 5 · 已选 '+focus.length+
+    (cur.length? (' · 按「'+cur.join('、')+'」的候选池挑') : '');
 
   var prom=promisedList(store);
   $('#todoC_head').innerHTML=['患者','门店','预计购药','超期','随访日期','随访原文','操作'].map(function(h){return '<th>'+h+'</th>';}).join('');
