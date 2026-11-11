@@ -235,7 +235,7 @@ textarea:focus{outline:none;border-color:var(--brand)}
 <body>
 <div class="top">
   <div class="top-in">
-    <div class="brand">达必妥患者管理与药师随访工作台<small>V2.0</small><span style="font-size:11px;color:var(--muted2);margin-left:8px;font-weight:400" title="构建时间，用来确认你打开的是不是最新版">build 1111.1521</span></div>
+    <div class="brand">达必妥患者管理与药师随访工作台<small>V2.0</small><span style="font-size:11px;color:var(--muted2);margin-left:8px;font-weight:400" title="构建时间，用来确认你打开的是不是最新版">build 1111.1541</span></div>
     <div class="storebox">
       <span>门店</span><select id="storeSel"></select>
       <span id="todayLbl" class="hint"></span>
@@ -2360,7 +2360,10 @@ async function restore(file){
   var txt=await file.text();
   var d=JSON.parse(txt);
   if(!d.sales&&!d.patients){ toast('不是有效的备份文件'); return; }
-  ['sales','follow','roster','patients','tasks','reports'].forEach(function(n){ DBX.clear(n); });
+  // 必须先 await 清空，否则 clear 与 put 并发，可能把刚写入的数据又清掉
+  for(var i=0;i<['sales','follow','roster','patients','tasks','reports'].length;i++){
+    await DBX.clear(['sales','follow','roster','patients','tasks','reports'][i]);
+  }
   await DBX.put('sales',d.sales||[]); await DBX.put('follow',d.follow||[]);
   await DBX.put('roster',d.roster||[]); await DBX.put('patients',d.patients||[]);
   await DBX.put('tasks',d.tasks||[]); await DBX.put('reports',d.reports||[]);
@@ -2383,10 +2386,23 @@ async function importFiles(files){
     var before=(await DBX.all(type)).length;
     await DBX.put(type,recs);
     var after=(await DBX.all(type)).length;
-    log.push(f.name+' → '+(type==='sales'?'销售':type==='follow'?'随访':'周期')+
+    var tname=(type==='sales'?'销售':type==='follow'?'随访':'周期');
+    // 名册解析出 0 条，多半是表里没有身份列（姓名/电话/会员号），必须明说，不能静默
+    if(type==='roster' && recs.length===0){
+      var cols=Object.keys(rows[0]).join('、');
+      log.push('<b style="color:var(--bad)">'+esc(f.name)+' → 周期名册：0 条，未导入</b><br>'+
+        '<span class="hint">这张表里没有「姓名 / 电话 / 手机号 / 会员号」，无法把周期对应到患者'+
+        '（可能是脱敏版或汇总版）。需要一版带手机号或会员号的周期表。</span><br>'+
+        '<span class="mini">该表列名：'+esc(cols.slice(0,180))+'…</span>');
+      var chip0=document.createElement('span'); chip0.className='fchip';
+      chip0.innerHTML='<b style="color:var(--bad)">周期 未导入</b>'+esc(f.name);
+      $('#fileChips').appendChild(chip0);
+      continue;
+    }
+    log.push(f.name+' → '+tname+
       '：解析 '+recs.length+' 条，库内 '+before+' → '+after+'（新增 '+(after-before)+'）');
     var chip=document.createElement('span'); chip.className='fchip';
-    chip.innerHTML='<b>'+(type==='sales'?'销售':type==='follow'?'随访':'周期')+'</b>'+esc(f.name)+'　'+(after-before>0?'+'+ (after-before):'无新增');
+    chip.innerHTML='<b>'+tname+'</b>'+esc(f.name)+'　'+(after-before>0?'+'+ (after-before):'无新增');
     $('#fileChips').appendChild(chip);
   }
   $('#importLog').innerHTML=log.map(function(x){return '<div>'+esc(x)+'</div>';}).join('');
