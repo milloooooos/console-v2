@@ -238,7 +238,7 @@ textarea:focus{outline:none;border-color:var(--brand)}
 <body>
 <div class="top">
   <div class="top-in">
-    <div class="brand">达必妥患者管理与药师随访工作台<small>V2.0</small><span style="font-size:11px;color:var(--muted2);margin-left:8px;font-weight:400" title="构建时间，用来确认你打开的是不是最新版">build 1112.1644</span></div>
+    <div class="brand">达必妥患者管理与药师随访工作台<small>V2.0</small><span style="font-size:11px;color:var(--muted2);margin-left:8px;font-weight:400" title="构建时间，用来确认你打开的是不是最新版">build 1112.1655</span></div>
     <div class="storebox">
       <span>门店</span><select id="storeSel"></select>
       <span id="todayLbl" class="hint"></span>
@@ -280,7 +280,7 @@ textarea:focus{outline:none;border-color:var(--brand)}
     </div>
     <div class="panel" id="todoAPanel">
       <div class="ph"><h3>常规随访名单</h3>
-        <span class="hint">预计购药日从今天到下周日（含已超期 30 天内）的全部进入，不设上限</span>
+        <span class="hint">预计购药日在今天~下周日之间、或已超期 30 天内的人全部进入，不设上限</span>
         <div class="sp"></div><span class="hint" id="todoA_cnt"></span></div>
       <div class="tw"><table><thead><tr id="todoA_head"></tr></thead><tbody id="todoA_body"></tbody></table></div>
     </div>
@@ -1375,22 +1375,26 @@ function focusKind(p){
   if(p.buyStatus==='已经超期')   return '<span class="tag t-warn">已经超期</span>';
   return '<span class="tag t-gray">'+(p.buyStatus||'—')+'</span>';
 }
-/* 常规名单的类型：本周到期 / 下周到期 / 今天到期 / 已超期 / 超期14天+ */
-var TODO_KINDS=['本周到期','下周到期','今天到期','已超期','超期14天+'];
+/* 常规名单的类型：本周到期（本周一~周日，含本周已超期/今天）/ 下周到期 / 已超期（往周）/ 超期14天+
+   —— 与「患者档案·本周」口径一致：只要预计购药日落在本周一~本周日，就算本周到期。 */
+var TODO_KINDS=['本周到期','下周到期','已超期','超期14天+'];
 function kindOf(od, planned){
   if(od==null) return '';
-  if(od>13)  return '超期14天+';
-  if(od>0)   return '已超期';
-  if(od===0) return '今天到期';
   var wkStart=parseD(weekKey(S.today)), thisSun=wkStart+6*DAY;
-  return (planned!=null && planned>thisSun)? '下周到期' : '本周到期';
+  if(planned!=null){
+    if(planned>=wkStart && planned<=thisSun) return '本周到期';
+    if(planned<wkStart) return od>13 ? '超期14天+' : '已超期';
+    return '下周到期';
+  }
+  if(od>13) return '超期14天+';
+  if(od>0)  return '已超期';
+  return '本周到期';
 }
 function todoKind(od, planned){
   var k=kindOf(od, planned);
   if(!k) return '<span class="tag t-gray">—</span>';
   if(k==='本周到期') return '<span class="tag t-teal">本周到期</span>';
   if(k==='下周到期') return '<span class="tag t-blue">下周到期</span>';
-  if(k==='今天到期') return '<span class="tag t-warn">今天到期</span>';
   if(k==='已超期')   return '<span class="tag t-warn">已超期</span>';
   return '<span class="tag t-bad" title="超期 14 天以上，已进入脱落风险区间，但仍在常规随访窗口（≤30 天）">超期14天+</span>';
 }
@@ -2477,7 +2481,7 @@ var TOUR_STEPS=[
  {g:'daily', tab:'todo', sel:'#todoHosp', title:'每天先看这里：药师待办',
   body:'上面的<b>医院</b>可以输入搜索，只看某一家医院的患者。<br>筛选只影响显示，<b>重点 5 个名额仍按整店算</b>。'},
  {g:'daily', tab:'todo', sel:'#todoA_body', title:'常规随访名单',
-  body:'预计购药日在 <b>7 天内到期、或超期 30 天以内</b>的人全部在这里，不设上限。<br>「类型」列分四档：即将到期 / 今天到期 / 已超期 / <b>超期14天+（优先打）</b>。'},
+  body:'预计购药日在 <b>7 天内到期、或超期 30 天以内</b>的人全部在这里，不设上限。<br>「类型」列分四档：<b>本周到期</b>（本周一~周日，含本周已超期和今天，与患者档案·本周一致）/ 下周到期 / 已超期（往周）/ <b>超期14天+（优先打）</b>。'},
  {g:'daily', tab:'todo', sel:'#todoBPanel', title:'重点维护：每周 5 人',
   body:'这些是超期较久、还能拉回来的人。<b>每家门店每周 5 个名额</b>，可以重新推荐或手动挑。<br>已经在上面常规名单里的人<b>不占</b>这 5 个名额。'},
  {g:'daily', tab:'todo', sel:'#todoB_body', title:'点一行，看这个人的全部底细',
