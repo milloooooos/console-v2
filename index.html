@@ -238,7 +238,7 @@ textarea:focus{outline:none;border-color:var(--brand)}
 <body>
 <div class="top">
   <div class="top-in">
-    <div class="brand">达必妥患者管理与药师随访工作台<small>V2.0</small><span style="font-size:11px;color:var(--muted2);margin-left:8px;font-weight:400" title="构建时间，用来确认你打开的是不是最新版">build 1112.1138</span></div>
+    <div class="brand">达必妥患者管理与药师随访工作台<small>V2.0</small><span style="font-size:11px;color:var(--muted2);margin-left:8px;font-weight:400" title="构建时间，用来确认你打开的是不是最新版">build 1112.1151</span></div>
     <div class="storebox">
       <span>门店</span><select id="storeSel"></select>
       <span id="todayLbl" class="hint"></span>
@@ -688,9 +688,10 @@ function parseSales(rows){
     var ticket=get(r,c.ticket), line=get(r,c.line)||String(i+1);
     var store=get(r,c.store)||'';
     // 主键必须带门店：不同药房的小票号会重号，只用 小票#行号 会让后导入的门店覆盖前一家
+    // 门店名做归一化（括号全/半角、空格），否则同一家店两种写法会生成两个 key → 重复导入不去重
     out.push({
-      key: ticket? (ticket+'#'+line+'&'+store)
-                : hash([fmtD(d),mid,q,get(r,c.amt),get(r,c.code),store].join('|')),
+      key: ticket? (ticket+'#'+line+'&'+normStore(store))
+                : hash([fmtD(d),mid,q,get(r,c.amt),get(r,c.code),normStore(store)].join('|')),
       ticket:ticket, line:line, date:d, boxQty:q, pack:pack, branches:q*pack,
       mid:mid, name:nm, phone:phone, store:store, hosp:get(r,c.hosp),
       doc:get(r,c.doc), diag:get(r,c.diag), amount:num(get(r,c.amt)),
@@ -821,7 +822,7 @@ function buildPatients(sales, follow, roster, stored, today){
   var map={}, byPhone={}, byMid={}, byName={};
   function newP(id,name,phone){
     var p={ key:id, name:name||'', phone:phone||'', mids:[], alias:[], stores:{}, store:'', hosp:'', doc:'', diag:'',
-      firstDate:null, lastDate:null, lastBranches:0, lastBoxes:0, totalBranches:0, visits:0, buyDates:{},
+      firstDate:null, lastDate:null, lastBranches:0, lastBoxes:0, totalBranches:0, returnBranches:0, visits:0, buyDates:{},
       dayQty:{}, dayBox:{}, dayMeta:{},
       cycle:null, cycleSrc:'', cycleStatus:'', cycleAt:0, cycleHint:null, cycleHistory:[],
       planOverride:null, planned:null, overdue:null, buyStatus:'', intent:'', lastFollow:null, followCount:0,
@@ -861,7 +862,8 @@ function buildPatients(sales, follow, roster, stored, today){
       if(s.doc) p.doc=s.doc;
       if(s.diag) p.diag=s.diag;
     }
-    p.totalBranches+=s.branches;
+    p.totalBranches+=s.branches;                        // 净额：退货(branches<0)会冲减
+    if(s.branches<0) p.returnBranches+=(-s.branches);   // 单独记退货支数（正数），供展示/对账
     var dk=fmtD(s.date);
     p.buyDates[dk]=1;
     p.dayQty[dk]=(p.dayQty[dk]||0)+s.branches;          // 同一天多笔下账 → 支数相加
@@ -1686,7 +1688,8 @@ function renderDrawer(){
       '<div><b>预计下次购药</b><em>'+(p.planned?fmtD(p.planned):'—')+'</em></div>'+
       '<div><b>超期天数</b><em>'+(p.overdue==null?'—':p.overdue+' 天')+'</em></div>'+
       '<div><b>首次购药</b><em>'+(p.firstDate?fmtD(p.firstDate):'—')+'</em></div>'+
-      '<div><b>累计购药</b><em>'+(p.totalBranches||0)+' 支</em></div>'+
+      '<div><b>累计购药</b><em>'+(p.totalBranches||0)+' 支'+(p.returnBranches>0?'<span class="mini">（净额）</span>':'')+'</em></div>'+
+      (p.returnBranches>0? '<div><b>退货支数</b><em>−'+p.returnBranches+' 支</em></div>':'')+
       (isDropped(p)? '<div><b>脱落月份</b><em>'+(dropMonthOf(p)||'—')+'</em></div>' : '')+
     '</div>'+
     '<div class="box" style="margin-top:8px">计算口径：预计下次购药 = 最近购药日 '+(p.lastDate?fmtD(p.lastDate):'—')+
@@ -1853,11 +1856,36 @@ async function migrateSalesKeys(){
   await DBX.del('sales',olds);
   return olds.length;
 }
+/* 库存压缩：把库里已有的销售按"小票+序号+归一化门店"去重，并把 key 统一成归一化格式。
+   作用：① 重复导入过的历史数据自动清成一份；② 门店括号全/半角两种写法不再各存一份。
+   先写后删，避免中途清空丢数据。返回被清理的重复条数。 */
+async function compactSales(){
+  var list=await DBX.all('sales');
+  if(!list.length) return 0;
+  var seen={}, keep=[], keepKeys={};
+  list.forEach(function(s){
+    var nk = s.ticket ? (s.ticket+'#'+s.line+'&'+normStore(s.store)) : s.key;
+    var id = s.ticket ? ('T|'+s.ticket+'|'+(s.line==null?'':s.line)+'|'+normStore(s.store))
+                      : ('H|'+(s.mid||s.phone||s.name||'')+'|'+fmtD(s.date)+'|'+(s.code||'')+'|'+(s.boxQty||0)+'|'+(s.amount||0));
+    if(seen[id]) return;                        // 重复行：丢弃
+    seen[id]=1;
+    var rec = (nk!==s.key) ? Object.assign({}, s, {key:nk}) : s;
+    keep.push(rec); keepKeys[rec.key]=1;
+  });
+  var delKeys=list.map(function(s){ return s.key; }).filter(function(k){ return !keepKeys[k]; });
+  var removed=list.length-keep.length;
+  if(!removed && !delKeys.length) return 0;
+  await DBX.put('sales', keep);                 // 先写（可能含归一化新键）
+  if(delKeys.length) await DBX.del('sales', delKeys);   // 再删旧键/重复键
+  return removed;
+}
 async function renderAll(reload){
   var keepView=S.view||'overview', keepY=window.scrollY;
   if(reload){
     var mig=await migrateSalesKeys();
     if(mig) console.log('销售主键已迁移到含门店格式：'+mig+' 条');
+    var cmp=await compactSales();               // 清理历史重复 + 统一归一化键
+    if(cmp){ try{ toast('已清理重复销售 '+cmp+' 条（同一张表被重复导入）'); }catch(e){} console.log('清理重复销售：'+cmp+' 条'); }
     S.sales  = await DBX.all('sales');
     S.follow = await DBX.all('follow');
     S.roster = await DBX.all('roster');
@@ -2354,11 +2382,11 @@ function exportRp(mask){
   toast((mask==='masked'?'脱敏版':'完整版')+'名单已导出（'+rows.length+' 行）');
 }
 function exportPatients(){
-  var head=['会员号','患者','门店','医院','医生','最近购药','支数','周期','周期来源','预计下次购药','超期天数','购药状态','最近随访','随访状态','复购意向','备注'];
+  var head=['会员号','患者','门店','医院','医生','最近购药','支数','累计购药','退货支数','周期','周期来源','预计下次购药','超期天数','购药状态','最近随访','随访状态','复购意向','备注'];
   var aoa=[head];
   var list=ptFiltered();          // 导出的就是当前筛选后的名单
   list.forEach(function(p){
-    aoa.push([keyOfPat(p),p.name,p.store,p.hosp,p.doc,fmtD(p.lastDate),p.lastBranches,p.cycle,p.cycleSrc,
+    aoa.push([keyOfPat(p),p.name,p.store,p.hosp,p.doc,fmtD(p.lastDate),p.lastBranches,p.totalBranches||0,p.returnBranches||0,p.cycle,p.cycleSrc,
       fmtD(p.planned),p.overdue==null?'':p.overdue,p.buyStatus,fmtD(p.lastFollow&&p.lastFollow.date),
       p.lastFollow?p.lastFollow.status:'',p.intent||'',p.note||'']);
   });
@@ -2369,7 +2397,7 @@ function exportPatients(){
     : fmtD(S.today);
   var asOfV=$('#ptAsOf')? $('#ptAsOf').value : '';
   if(asOfV) tag += '_截至'+asOfV.slice(5);        // 历史名单和当前名单不能同名
-  XLSX.writeFile(aoaToBook(aoa,'患者档案',[12,10,16,18,10,12,8,8,14,12,8,10,12,18,10,24]),
+  XLSX.writeFile(aoaToBook(aoa,'患者档案',[12,10,16,18,10,12,8,9,9,8,14,12,8,10,12,18,10,24]),
     '达必妥_患者档案_'+tag+'_'+list.length+'人.xlsx');
 }
 function copyText(txt,label){
