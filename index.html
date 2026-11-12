@@ -59,6 +59,11 @@ select:focus,input:focus{outline:none;border-color:var(--brand)}
 .ph{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--line);flex-wrap:wrap}
 .ph h3{margin:0;font-size:14px;font-weight:600}
 .ph .sp{margin-left:auto}
+/* 患者档案头部：拆成两行，避免控件换行导致"上行右对齐、下行左对齐"的错位 */
+.pt-ph{display:block}
+.pt-hrow{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.pt-hrow+.pt-hrow{margin-top:10px}
+.pt-hrow .sp{margin-left:auto}
 .hint{font-size:12px;color:var(--muted)}
 /* 表格 */
 .tw{overflow:auto;max-height:calc(100vh - 300px)}
@@ -238,7 +243,7 @@ textarea:focus{outline:none;border-color:var(--brand)}
 <body>
 <div class="top">
   <div class="top-in">
-    <div class="brand">达必妥患者管理与药师随访工作台<small>V2.0</small><span style="font-size:11px;color:var(--muted2);margin-left:8px;font-weight:400" title="构建时间，用来确认你打开的是不是最新版">build 1112.1655</span></div>
+    <div class="brand">达必妥患者管理与药师随访工作台<small>V2.0</small><span style="font-size:11px;color:var(--muted2);margin-left:8px;font-weight:400" title="构建时间，用来确认你打开的是不是最新版">build 1112.1708</span></div>
     <div class="storebox">
       <span>门店</span><select id="storeSel"></select>
       <span id="todayLbl" class="hint"></span>
@@ -323,21 +328,27 @@ textarea:focus{outline:none;border-color:var(--brand)}
   <!-- 患者 -->
   <section id="p-patients" class="hidden">
     <div class="panel">
-      <div class="ph"><h3>患者档案</h3>
-        <span class="hint">全量检索用：找一个人看状态。改周期去「周期维护」，做随访去「药师待办」</span>
-        <div class="sp"></div>
-        <input type="text" id="ptSearch" placeholder="搜索 姓名/电话/会员号/医院/医生" style="width:240px">
-        <select id="ptScope"><option value="own">当前归属患者</option><option value="hist">曾在本店购药</option></select>
-        <span id="ptRiskWrap"></span>
-        <span id="ptFollowWrap"></span>
-        <span class="seg" id="ptDropSeg" title="切换「脱落」的判定口径：销售定义=预计购药日超 60 天未购；随访状态=最近随访明确停药/脱落/流失">
-          <button type="button" data-d="sales" class="on">销售定义脱落</button>
-          <button type="button" data-d="follow">随访状态脱落</button>
-        </span>
-        <span class="hint" style="align-self:center">脱落月份</span>
-        <span id="ptDropMonthWrap"></span>
-        <button class="btn ghost sm" id="btnExpPatients">导出当前筛选</button>
-        <span class="hint" id="ptCnt"></span>
+      <div class="ph pt-ph">
+        <div class="pt-hrow">
+          <h3>患者档案</h3>
+          <span class="hint">全量检索用：找一个人看状态。改周期去「周期维护」，做随访去「药师待办」</span>
+          <div class="sp"></div>
+          <input type="text" id="ptSearch" placeholder="搜索 姓名/电话/会员号/医院/医生" style="width:240px">
+          <select id="ptScope"><option value="own">当前归属患者</option><option value="hist">曾在本店购药</option></select>
+        </div>
+        <div class="pt-hrow pt-hrow2">
+          <span id="ptRiskWrap"></span>
+          <span id="ptFollowWrap"></span>
+          <span class="seg" id="ptDropSeg" title="切换「脱落」的判定口径：销售定义=预计购药日超 60 天未购；随访状态=最近随访明确停药/脱落/流失">
+            <button type="button" data-d="sales" class="on">销售定义脱落</button>
+            <button type="button" data-d="follow">随访状态脱落</button>
+          </span>
+          <span class="hint" style="align-self:center">脱落月份</span>
+          <span id="ptDropMonthWrap"></span>
+          <div class="sp"></div>
+          <button class="btn ghost sm" id="btnExpPatients">导出当前筛选</button>
+          <span class="hint" id="ptCnt"></span>
+        </div>
       </div>
       <div class="planbar">
         <span class="pl-lbl">按预计购药日期查名单</span>
