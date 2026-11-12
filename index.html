@@ -238,7 +238,7 @@ textarea:focus{outline:none;border-color:var(--brand)}
 <body>
 <div class="top">
   <div class="top-in">
-    <div class="brand">达必妥患者管理与药师随访工作台<small>V2.0</small><span style="font-size:11px;color:var(--muted2);margin-left:8px;font-weight:400" title="构建时间，用来确认你打开的是不是最新版">build 1112.1633</span></div>
+    <div class="brand">达必妥患者管理与药师随访工作台<small>V2.0</small><span style="font-size:11px;color:var(--muted2);margin-left:8px;font-weight:400" title="构建时间，用来确认你打开的是不是最新版">build 1112.1644</span></div>
     <div class="storebox">
       <span>门店</span><select id="storeSel"></select>
       <span id="todayLbl" class="hint"></span>
@@ -719,29 +719,50 @@ function parseFollow(rows){
     dropout:pick(head,[['脱落/流失原因','脱落原因']]),
     plan:pick(head,[['计划执行日期']])
   };
-  // 患者实际把内容写在这几列的任一列（最常见是「患者反馈其他问题」），原代码只读「患者反馈内容」→ 常显示"未填"。
-  // 这里把多列合并成"随访内容"，后续展示/原因分类/周期抽取都用它。
-  var FB_COLS=[
-    ['患者反馈内容','反馈内容'],
-    ['患者反馈其他问题','患者反馈其它问题','反馈其他问题'],
-    ['用药体验'],
-    ['用药依从性'],
-    ['身体状况'],
-    ['不良反应'],
-    ['相关问题交代','相关问交代','相关问题交待'],
-    ['用药健康和指导（药物）','用药健康和指导(药物)'],
-    ['用药健康和指导（疾病指导）','用药健康和指导(疾病指导)'],
-    ['用药健康和指导（生活习惯指导）','用药健康和指导(生活习惯指导)']
-  ].map(function(g){ return pick(head,g); }).filter(function(x){ return !!x; });
+  // 患者实际把内容写在这些列（最常见「患者反馈其他问题」）。按"信息量"取：
+  // ① 清洗"空标签："前缀（如 不良反应：,xxx）② 过滤纯状态词（遵医嘱用药/良好/无…）
+  // ③ 去重（患者反馈内容 常是 用药体验 加了前缀的重复）④ 按 列优先级+长度 排序拼接
+  var FB_PRI=[
+    [['患者反馈其他问题','患者反馈其它问题','反馈其他问题'],100],
+    [['患者反馈内容','反馈内容'],90],
+    [['用药体验'],80],
+    [['相关问题交代','相关问交代','相关问题交待'],70],
+    [['不良反应'],60],
+    [['身体状况'],55],
+    [['用药健康和指导（药物）','用药健康和指导(药物)'],30],
+    [['用药健康和指导（疾病指导）','用药健康和指导(疾病指导)'],30],
+    [['用药健康和指导（生活习惯指导）','用药健康和指导(生活习惯指导)'],30],
+    [['用药依从性'],10]
+  ].map(function(x){ return { col:pick(head,[x[0]]), w:x[1] }; }).filter(function(x){ return !!x.col; });
+  var FB_NOISE={'遵医嘱用药':1,'良好':1,'正常':1,'无':1,'否':1,'是':1,'暂无':1,'无不适':1,'按计划持续用药':1};
+  // 反复去掉"标签："（当标签后面紧跟分隔符或已到结尾，说明该标签没填值）
+  function cleanFB(v){
+    v=String(v==null?'':v).trim();
+    for(var i=0;i<3;i++){
+      var nv=v.replace(/^[^：:，,；;。]{1,10}[：:](?:[，,；;、\s]+|$)/,'');
+      if(nv===v) break; v=nv;
+    }
+    return v.replace(/^[，,；;、：:\s]+/,'').trim();
+  }
   function fbOf(r){
-    var parts=[];
-    FB_COLS.forEach(function(col){
-      var v=get(r,col);
+    var means=[], raws=[];
+    FB_PRI.forEach(function(it){
+      var v=cleanFB(get(r,it.col));
       if(!v) return;
-      if(/^(否|无|0|1|-|—|－|\/|、)$/.test(v)) return;   // 过滤"否/无/1"这类无信息值
-      if(parts.indexOf(v)<0) parts.push(v);              // 去重
+      var ok=(v.length>=6 && !FB_NOISE[v]);          // 有信息量：够长且不是纯状态词
+      (ok?means:raws).push({w:it.w, n:v.length, v:v});
     });
-    return parts.join('；');
+    means.sort(function(a,b){ return (b.w-a.w) || (b.n-a.n); });   // 先按列优先级，再按长度
+    raws.sort(function(a,b){ return b.n-a.n; });                   // 无信息量的放最后兜底
+    var keep=[];
+    (means.concat(raws)).forEach(function(x){
+      for(var i=0;i<keep.length;i++){
+        if(x.v===keep[i] || keep[i].indexOf(x.v)>=0 || x.v.indexOf(keep[i])>=0) return;  // 相同/被包含 → 视为重复
+      }
+      keep.push(x.v);
+    });
+    var s=keep.join('；');
+    return s.length>160 ? s.slice(0,160) : s;
   }
   rows.forEach(function(r,i){
     var d=parseD(get(r,c.date)); if(!d) return;
@@ -751,7 +772,7 @@ function parseFollow(rows){
       key: tno || hash([get(r,c.mid),fmtD(d),get(r,c.task),get(r,c.status),fbText.slice(0,20)].join('|')),
       tno:tno, date:d, name:get(r,c.name), mid:get(r,c.mid), phone:normPhone(get(r,c.phone)),
       task:get(r,c.task), contact:get(r,c.contact), status:get(r,c.status),
-      reason:get(r,c.reason), other:get(r,c.other), fb:fbText, fbRaw:get(r,c.fb),
+      reason:get(r,c.reason), other:get(r,c.other), fb:fbText, fbRaw:cleanFB(get(r,c.fb)),
       cd:num(get(r,c.cd))||0, store:get(r,c.store), dropout:get(r,c.dropout)
     };
     rec.intent = intentOf(rec);
