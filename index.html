@@ -238,7 +238,7 @@ textarea:focus{outline:none;border-color:var(--brand)}
 <body>
 <div class="top">
   <div class="top-in">
-    <div class="brand">达必妥患者管理与药师随访工作台<small>V2.0</small><span style="font-size:11px;color:var(--muted2);margin-left:8px;font-weight:400" title="构建时间，用来确认你打开的是不是最新版">build 1112.1151</span></div>
+    <div class="brand">达必妥患者管理与药师随访工作台<small>V2.0</small><span style="font-size:11px;color:var(--muted2);margin-left:8px;font-weight:400" title="构建时间，用来确认你打开的是不是最新版">build 1112.1633</span></div>
     <div class="storebox">
       <span>门店</span><select id="storeSel"></select>
       <span id="todayLbl" class="hint"></span>
@@ -719,14 +719,39 @@ function parseFollow(rows){
     dropout:pick(head,[['脱落/流失原因','脱落原因']]),
     plan:pick(head,[['计划执行日期']])
   };
+  // 患者实际把内容写在这几列的任一列（最常见是「患者反馈其他问题」），原代码只读「患者反馈内容」→ 常显示"未填"。
+  // 这里把多列合并成"随访内容"，后续展示/原因分类/周期抽取都用它。
+  var FB_COLS=[
+    ['患者反馈内容','反馈内容'],
+    ['患者反馈其他问题','患者反馈其它问题','反馈其他问题'],
+    ['用药体验'],
+    ['用药依从性'],
+    ['身体状况'],
+    ['不良反应'],
+    ['相关问题交代','相关问交代','相关问题交待'],
+    ['用药健康和指导（药物）','用药健康和指导(药物)'],
+    ['用药健康和指导（疾病指导）','用药健康和指导(疾病指导)'],
+    ['用药健康和指导（生活习惯指导）','用药健康和指导(生活习惯指导)']
+  ].map(function(g){ return pick(head,g); }).filter(function(x){ return !!x; });
+  function fbOf(r){
+    var parts=[];
+    FB_COLS.forEach(function(col){
+      var v=get(r,col);
+      if(!v) return;
+      if(/^(否|无|0|1|-|—|－|\/|、)$/.test(v)) return;   // 过滤"否/无/1"这类无信息值
+      if(parts.indexOf(v)<0) parts.push(v);              // 去重
+    });
+    return parts.join('；');
+  }
   rows.forEach(function(r,i){
     var d=parseD(get(r,c.date)); if(!d) return;
     var tno=get(r,c.tno);
+    var fbText=fbOf(r);
     var rec={
-      key: tno || hash([get(r,c.mid),fmtD(d),get(r,c.task),get(r,c.status),get(r,c.fb).slice(0,20)].join('|')),
+      key: tno || hash([get(r,c.mid),fmtD(d),get(r,c.task),get(r,c.status),fbText.slice(0,20)].join('|')),
       tno:tno, date:d, name:get(r,c.name), mid:get(r,c.mid), phone:normPhone(get(r,c.phone)),
       task:get(r,c.task), contact:get(r,c.contact), status:get(r,c.status),
-      reason:get(r,c.reason), other:get(r,c.other), fb:get(r,c.fb),
+      reason:get(r,c.reason), other:get(r,c.other), fb:fbText, fbRaw:get(r,c.fb),
       cd:num(get(r,c.cd))||0, store:get(r,c.store), dropout:get(r,c.dropout)
     };
     rec.intent = intentOf(rec);
@@ -896,10 +921,18 @@ function buildPatients(sales, follow, roster, stored, today){
     if(!p) return;
     if(!p.phone&&f.phone){ p.phone=f.phone; byPhone[f.phone]=p; }
     p.followCount++;
-    p.lastFollow = {date:f.date,status:f.status,reason:f.reason,other:f.other,fb:f.fb,
-                    contact:f.contact,intent:f.intent,task:f.task,key:f.key};
+    var rec={date:f.date,status:f.status,reason:f.reason,other:f.other,fb:f.fb,
+             contact:f.contact,intent:f.intent,task:f.task,key:f.key};
+    // 同一天可能有多条（如一条"忽略"空记录 + 一条"已完成"有内容）。同日期时优先保留有内容的，避免被空记录覆盖成"未填"。
+    if(p.lastFollow && f.date===p.lastFollow.date){
+      var curHas=(p.lastFollow.fb||p.lastFollow.reason||p.lastFollow.other)?1:0;
+      var newHas=(f.fb||f.reason||f.other||f.dropout)?1:0;
+      if(!(curHas && !newHas)) p.lastFollow=rec;
+    }else{
+      p.lastFollow=rec;
+    }
     if(f.intent) p.intent=f.intent;
-    var cc=cycleFromText((f.other||'')+' '+(f.fb||'')+' '+(f.reason||''));
+    var cc=cycleFromText((f.other||'')+' '+(f.fbRaw||'')+' '+(f.reason||''));   // 周期抽取只用原始"患者反馈内容"，避免合并文本里数字误判
     if(cc.level==='clear' && (!p.followCycle || f.date>=p.followCycle.at))
       p.followCycle={days:cc.days,at:f.date,raw:cc.raw};
     if(cc.level==='fuzzy' && (!p.cycleHint || f.date>=p.cycleHint.at))
@@ -1001,7 +1034,7 @@ function focusCandidates(store){
   S.patients.forEach(function(p){
     if(!ownedBy(p,store)) return;
     var d=p.overdue==null?null:p.overdue;
-    var fail = p.lastFollow && /未接|拒接|联系不上|失联|电话不通|关机/.test((p.lastFollow.reason||'')+(p.lastFollow.fb||''));
+    var fail = p.lastFollow && /未接|未拨通|未接通|拨不通|拒接|挂断|联系不上|失联|电话不通|关机|停机|空号|暂停服务|不是本人|无法接通/.test((p.lastFollow.reason||'')+(p.lastFollow.fb||''));
     if(!(d!=null&&d>=S.cfg.riskFrom) && !fail) return;
     // 按业务优先级：有脱落风险(可挽回) > 已经超期 > 已脱落(超期很久，放最后)
     var s=0;
@@ -1205,7 +1238,7 @@ function tagCycle(p){
 function tagFollow(p){
   if(!p.lastFollow) return '<span class="tag t-gray">无随访</span>';
   var f=p.lastFollow;
-  var ok = !/未接|拒接|联系不上|失联|电话不通|关机/.test((f.reason||'')+(f.fb||''));
+  var ok = !/未接|未拨通|未接通|拨不通|拒接|挂断|联系不上|失联|电话不通|关机|停机|空号|暂停服务|不是本人|无法接通/.test((f.reason||'')+(f.fb||''));
   return '<span class="tag '+(ok?'t-teal':'t-warn')+'">'+(ok?'已联系':'联系失败')+'</span>';
 }
 function tagIntent(p){
@@ -1504,7 +1537,7 @@ function ptFollowMatch(p, arr){
   if(!arr.length) return true;
   return arr.some(function(v){
     if(v==='none') return !p.lastFollow;
-    if(v==='fail') return !!(p.lastFollow && /未接|拒接|联系不上|失联|电话不通|关机/.test((p.lastFollow.reason||'')+(p.lastFollow.fb||'')));
+    if(v==='fail') return !!(p.lastFollow && /未接|未拨通|未接通|拨不通|拒接|挂断|联系不上|失联|电话不通|关机|停机|空号|暂停服务|不是本人|无法接通/.test((p.lastFollow.reason||'')+(p.lastFollow.fb||'')));
     if(v==='intent') return p.intent==='yes';
     if(v==='qa') return !!p.qaFlag;
     return false;
@@ -1670,7 +1703,7 @@ function renderDrawer(){
       (s.ticket?' · 小票 '+esc(s.ticket):'')+'<div class="mini">'+esc(s.hosp||'')+' '+esc(s.doc||'')+'</div></div>';
   }).join(''):'<div class="tli"><div class="f mini">（无购药记录）</div></div>';
   var flHtml=fls.length? fls.slice(0,12).map(function(f){
-    var bad=/未接|拒接|联系不上|失联|电话不通|关机/.test((f.reason||'')+(f.fb||''));
+    var bad=/未接|未拨通|未接通|拨不通|拒接|挂断|联系不上|失联|电话不通|关机|停机|空号|暂停服务|不是本人|无法接通/.test((f.reason||'')+(f.fb||''));
     return '<div class="tli'+(bad?' hot':'')+'"><span class="d">'+fmtD(f.date)+'</span> · '+esc(f.task)+
       '<div style="margin-top:2px"><span class="tag '+(f.status==='按计划持续用药'?'t-good':'t-warn')+'">'+esc(f.status||'—')+'</span>'+
       (f.reason?' <span class="tag t-gray">'+esc(f.reason)+'</span>':'')+
@@ -1699,7 +1732,7 @@ function renderDrawer(){
       (p.lastFollow? (
         (function(){
           var f=p.lastFollow;
-          var bad=/未接|拒接|联系不上|失联|电话不通|关机/.test((f.reason||'')+(f.fb||''));
+          var bad=/未接|未拨通|未接通|拨不通|拒接|挂断|联系不上|失联|电话不通|关机|停机|空号|暂停服务|不是本人|无法接通/.test((f.reason||'')+(f.fb||''));
           return '<div class="kv">'+
             '<div><b>随访日期</b><em>'+fmtD(f.date)+'</em></div>'+
             '<div><b>任务类型</b><em>'+esc(f.task||'—')+'</em></div>'+
@@ -2201,7 +2234,7 @@ function rowOf(p,type){
   return {id:keyOfPat(p),name:p.name,phone:p.phone||'',store:p.store,hosp:p.hosp,doc:p.doc,lastDate:p.lastDate,
     lastBranches:p.lastBranches,cycle:p.cycle,planned:p.planned,status:p.buyStatus,
     fdate:p.lastFollow?p.lastFollow.date:null,
-    fstatus:p.lastFollow?((/未接|拒接|联系不上|失联|电话不通|关机/.test((p.lastFollow.reason||'')+(p.lastFollow.fb||'')))?'联系失败':'成功联系'):'—',
+    fstatus:p.lastFollow?((/未接|未拨通|未接通|拨不通|拒接|挂断|联系不上|失联|电话不通|关机|停机|空号|暂停服务|不是本人|无法接通/.test((p.lastFollow.reason||'')+(p.lastFollow.fb||'')))?'联系失败':'成功联系'):'—',
     intent:p.intent==='yes'?'是':(p.intent==='no'?'否':'未知'),
     reason:reasonClass(p), fb:p.lastFollow?(p.lastFollow.fb||p.lastFollow.other||''):'',
     repurchase: bought?'是':'否', listType:type};
