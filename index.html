@@ -35,6 +35,9 @@ select:focus,input:focus{outline:none;border-color:var(--brand)}
 .btn.ghost:hover{background:var(--brand-soft)}
 .btn.sm{padding:5px 11px;font-size:12.5px}
 .btn.gray{background:#fff;color:var(--muted);border:1px solid var(--line)}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;vertical-align:middle}
+.seg button{border:0;background:#fff;padding:6px 12px;font-size:12.5px;cursor:pointer;color:var(--muted)}
+.seg button.on{background:var(--brand);color:#fff}
 .btn:disabled{opacity:.45;cursor:not-allowed}
 .tabs{max-width:1560px;margin:0 auto;padding:0 22px;display:flex;gap:4px;overflow-x:auto}
 .tab{padding:9px 14px;border:none;background:none;color:var(--muted);font-size:13.5px;cursor:pointer;border-bottom:2px solid transparent;white-space:nowrap}
@@ -235,7 +238,7 @@ textarea:focus{outline:none;border-color:var(--brand)}
 <body>
 <div class="top">
   <div class="top-in">
-    <div class="brand">达必妥患者管理与药师随访工作台<small>V2.0</small><span style="font-size:11px;color:var(--muted2);margin-left:8px;font-weight:400" title="构建时间，用来确认你打开的是不是最新版">build 1111.1645</span></div>
+    <div class="brand">达必妥患者管理与药师随访工作台<small>V2.0</small><span style="font-size:11px;color:var(--muted2);margin-left:8px;font-weight:400" title="构建时间，用来确认你打开的是不是最新版">build 1111.1733</span></div>
     <div class="storebox">
       <span>门店</span><select id="storeSel"></select>
       <span id="todayLbl" class="hint"></span>
@@ -327,6 +330,12 @@ textarea:focus{outline:none;border-color:var(--brand)}
         <select id="ptScope"><option value="own">当前归属患者</option><option value="hist">曾在本店购药</option></select>
         <span id="ptRiskWrap"></span>
         <span id="ptFollowWrap"></span>
+        <span class="seg" id="ptDropSeg" title="切换「脱落」的判定口径：销售定义=预计购药日超 60 天未购；随访状态=最近随访明确停药/脱落/流失">
+          <button type="button" data-d="sales" class="on">销售定义脱落</button>
+          <button type="button" data-d="follow">随访状态脱落</button>
+        </span>
+        <span class="hint" style="align-self:center">脱落月份</span>
+        <span id="ptDropMonthWrap"></span>
         <button class="btn ghost sm" id="btnExpPatients">导出当前筛选</button>
         <span class="hint" id="ptCnt"></span>
       </div>
@@ -353,7 +362,7 @@ textarea:focus{outline:none;border-color:var(--brand)}
       <div class="planbar-note" id="ptAsOfNote">只看当前？「回溯到」留空。<b>回看 10 月</b>：区间选 10-01~10-31，回溯到填 2026-10-31，系统只用当天及以前的销售重算当时的应购日（按当前周期回算，属近似值）。「后续购药」看的是这批人后来有没有回来买。</div>
       <div class="tw"><table><thead><tr>
         <th>患者 / 会员号</th><th>门店 / 医院 · 医生</th><th class="num">最近购药</th>
-        <th class="num">预计下次购药</th><th class="num">超期</th><th>购药状态</th><th>随访状态</th><th>复购意向</th><th>操作</th>
+        <th class="num">预计下次购药</th><th class="num">超期</th><th>购药状态</th><th>最近随访</th><th>复购意向</th><th>操作</th>
       </tr></thead><tbody id="ptBody"></tbody></table></div>
     </div>
   </section>
@@ -771,7 +780,9 @@ var S = {
   sales:[], follow:[], roster:[], patients:[], tasks:[], reports:[],
   store:'', storeList:[], today:today0(),
   cfg:{ newCycle:14, oldCycle:28, followAuto:true, riskFrom:14, dropFrom:60, soonDays:7 },
-  view:'overview', cur:null, rpType:'A', rpResult:null, cySel:{}
+  view:'overview', cur:null, rpType:'A', rpResult:null, cySel:{},
+  ptDropDef:'sales',           // 脱落口径：sales=预计购药日超 60 天未购（原定义） / follow=最近随访明确停药·脱落·流失
+  ptDropMonth:[]               // 脱落月份筛选（按当前口径计算的脱落月份，可多选）
 };
 
 /* ---------- 患者聚合 ---------- */
@@ -906,6 +917,12 @@ function buildPatients(sales, follow, roster, stored, today){
     }
     // 随访质量：断档月却按计划（沿用 V1 口径：末次购药后 30 天以上仍按计划）
     if(p.lastFollow && p.lastFollow.status==='按计划持续用药' && p.overdue!=null && p.overdue>=30) p.qaFlag=true;
+    // 随访口径的脱落：最近一次随访明确表态不再用 / 停药 / 脱落 / 流失
+    p.followDrop = !!(p.lastFollow && (
+      p.lastFollow.intent==='no' ||
+      /停药|暂停用药|脱落|流失|终止|结束治疗/.test(p.lastFollow.status||'') ||
+      (p.lastFollow.dropout && String(p.lastFollow.dropout).trim())
+    ));
   });
   return list;
 }
@@ -1161,6 +1178,48 @@ function tagIntent(p){
   if(p.intent==='no') return '<span class="tag t-gray">无意愿</span>';
   return '<span class="tag t-gray">未知</span>';
 }
+/* 患者档案表格的「最近随访」列：日期 + 联系结果 + 脱落原因分类 + 复购意向，一眼看清最近一次随访情况 */
+function recentFollowCell(p){
+  var f=p.lastFollow;
+  if(!f) return '<span class="tag t-gray">无随访</span>';
+  var rc=reasonClass(p);
+  return '<div>'+fmtD(f.date)+' '+tagFollow(p)+'</div>'+
+    '<div class="mini">'+((rc&&rc!=='其他原因')?'<span class="tag t-gray">'+esc(rc)+'</span> ':'')+
+    (p.intent==='yes'?'<span class="tag t-teal">拟复购</span>':'')+'</div>';
+}
+/* 脱落口径切换：sales=预计购药日超 dropFrom 天未购（行为） / follow=最近随访明确停药·脱落·流失（表态） */
+function isDropped(p){
+  if(S.ptDropDef==='follow') return !!p.followDrop;
+  return p.buyStatus==='已脱落';
+}
+/* 患者档案表格里"购药状态"列按当前口径显示脱落：随访口径下，非随访脱落的人不标红"已脱落" */
+function dispStatus(p){
+  if(S.ptDropDef!=='follow') return p.buyStatus;
+  if(p.followDrop) return '已脱落';
+  if(p.buyStatus==='已脱落') return '有脱落风险';
+  return p.buyStatus;
+}
+/* 脱落月份：销售口径=预计购药日+dropFrom 天的月份；随访口径=最近一次表态脱落的随访月份 */
+function monthStr(d){
+  var dt=(d instanceof Date)? d : new Date(d);
+  return dt.getFullYear()+'-'+('0'+(dt.getMonth()+1)).slice(-2);
+}
+function dropMonthOf(p){
+  if(S.ptDropDef==='follow'){
+    return (p.followDrop && p.lastFollow && p.lastFollow.date) ? monthStr(p.lastFollow.date) : null;
+  }
+  if(p.planned==null) return null;
+  return monthStr(p.planned + S.cfg.dropFrom*DAY);
+}
+function droppedMonths(){
+  var set={};
+  patsShown().forEach(function(p){
+    if(!isDropped(p)) return;
+    var m=dropMonthOf(p);
+    if(m) set[m]=true;
+  });
+  return Object.keys(set).sort().reverse();
+}
 function salesOf(p){
   return S.sales.filter(function(s){
     return (s.mid&&p.mids.indexOf(s.mid)>=0) || (p.phone&&s.phone===p.phone) || (p.name&&nname(s.name)===nname(p.name));
@@ -1402,6 +1461,7 @@ function ptRiskMatch(p, arr){
   if(!arr.length) return true;
   return arr.some(function(v){
     if(v==='normal') return p.buyStatus==='正常'||p.buyStatus==='即将到期';
+    if(v==='已脱落') return isDropped(p);
     return p.buyStatus===v;
   });
 }
@@ -1491,6 +1551,11 @@ function ptFiltered(){
       if(res==='bought' && !got) return false;
       if(res==='miss'   &&  got) return false;
     }
+    if(S.ptDropMonth && S.ptDropMonth.length){
+      if(!isDropped(p)) return false;
+      var dm=dropMonthOf(p);
+      if(!dm || S.ptDropMonth.indexOf(dm)<0) return false;
+    }
     return true;
   }).sort(function(a,b){ return (b.overdue||-9999)-(a.overdue||-9999); });
 }
@@ -1509,6 +1574,14 @@ function renderPatients(tablesOnly){
       w3.innerHTML=mselHtml('ptHosp','全部医院',hl.map(function(x){return {v:x,l:x};}),S.ptHosp||[]);
       mselBind('ptHosp',function(v){ S.ptHosp=v; renderPatients(true); });
     }
+    var seg=$('#ptDropSeg');
+    if(seg) $$('#ptDropSeg button').forEach(function(x){ x.classList.toggle('on', x.dataset.d===S.ptDropDef); });
+    var w4=$('#ptDropMonthWrap');
+    if(w4){
+      var mo=droppedMonths();
+      w4.innerHTML=mselHtml('ptDropMonth','全部脱落月份',mo.map(function(m){return {v:m,l:m};}),S.ptDropMonth||[]);
+      mselBind('ptDropMonth',function(v){ S.ptDropMonth=v; renderPatients(true); });
+    }
   }
   var rows=ptFiltered();
   var pfEl=$('#ptPlanFrom'), ptEl=$('#ptPlanTo');
@@ -1523,7 +1596,8 @@ function renderPatients(tablesOnly){
   }
   var resEl=$('#ptResult');
   if(resEl && resEl.value) rngTxt+=(resEl.value==='miss'?'至今没买':'后来已买')+' · ';
-  $('#ptCnt').textContent=rngTxt+'共 '+rows.length+' 人';
+  var dmTxt=(S.ptDropMonth&&S.ptDropMonth.length)? ('脱落月份：'+S.ptDropMonth.join('/')+' · ') : '';
+  $('#ptCnt').textContent=(S.ptDropDef==='follow'?'脱落口径：随访状态 · ':'')+dmTxt+rngTxt+'共 '+rows.length+' 人';
   var note=$('#ptPlanNote');
   if(note) note.textContent = (hs.length? ('已选 '+hs.length+' 家医院 · 与其他条件同时满足')
                                         : '留空 = 不限医院；只填一边日期也可以');
@@ -1535,7 +1609,7 @@ function renderPatients(tablesOnly){
       '<td class="num">'+fmtD(p.lastDate)+'</td>'+
       '<td class="num">'+fmtD(p.planned)+'</td>'+
       '<td class="num">'+(p.overdue==null?'—':p.overdue)+'</td>'+
-      '<td>'+tagRisk(p.buyStatus)+'</td><td>'+tagFollow(p)+'</td><td>'+tagIntent(p)+'</td>'+
+      '<td>'+tagRisk(dispStatus(p))+'</td><td>'+recentFollowCell(p)+'</td><td>'+tagIntent(p)+'</td>'+
       '<td><button class="btn ghost sm" data-open="'+esc(p.key)+'">详情</button></td></tr>';
   }).join('') : '<tr><td colspan="9" class="hint" style="padding:22px">没有符合条件的患者</td></tr>';
 }
@@ -1580,10 +1654,31 @@ function renderDrawer(){
       '<div><b>超期天数</b><em>'+(p.overdue==null?'—':p.overdue+' 天')+'</em></div>'+
       '<div><b>首次购药</b><em>'+(p.firstDate?fmtD(p.firstDate):'—')+'</em></div>'+
       '<div><b>累计购药</b><em>'+(p.totalBranches||0)+' 支</em></div>'+
+      (isDropped(p)? '<div><b>脱落月份</b><em>'+(dropMonthOf(p)||'—')+'</em></div>' : '')+
     '</div>'+
     '<div class="box" style="margin-top:8px">计算口径：预计下次购药 = 最近购药日 '+(p.lastDate?fmtD(p.lastDate):'—')+
       ' + '+p.lastBranches+' 支 × '+p.cycle+' 天 = '+(p.planned?fmtD(p.planned):'—')+
       (p.planOverride?'（本次为药师手工指定日期）':'')+'</div></div>'+
+    '<div class="sec"><h4>最近一次随访</h4>'+
+      (p.lastFollow? (
+        (function(){
+          var f=p.lastFollow;
+          var bad=/未接|拒接|联系不上|失联|电话不通|关机/.test((f.reason||'')+(f.fb||''));
+          return '<div class="kv">'+
+            '<div><b>随访日期</b><em>'+fmtD(f.date)+'</em></div>'+
+            '<div><b>任务类型</b><em>'+esc(f.task||'—')+'</em></div>'+
+            '<div><b>联系结果</b><em>'+(bad?'<span class="tag t-warn">联系失败</span>':'<span class="tag t-teal">已联系</span>')+'</em></div>'+
+            '<div><b>随访状态</b><em>'+esc(f.status||'—')+'</em></div>'+
+            '<div><b>脱落原因分类</b><em>'+esc(reasonClass(p))+'</em></div>'+
+            '<div><b>复购意向</b><em>'+esc(p.intent==='yes'?'准备复购':p.intent==='no'?'无意愿':'未知')+'</em></div>'+
+          '</div>'+
+          '<div class="box" style="margin-top:8px">'+
+            esc((f.fb||f.other||f.reason||'（未填写随访内容）').slice(0,200))+
+          '</div>';
+        })()
+      ) : '<div class="box">（无随访记录）</div>')+
+    '</div>'+
+
 
     '<div class="sec"><h4>周期维护</h4>'+
       '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'+
@@ -2667,6 +2762,14 @@ $$('.planbar .btn[data-plan]').forEach(function(b){
 ['ptAsOf','ptResult'].forEach(function(id){
   var el=$('#'+id); if(!el) return;
   el.onchange=function(){ renderPatients(true); };
+});
+// 脱落口径切换（销售定义 / 随访状态定义）
+$$('#ptDropSeg button').forEach(function(b){
+  b.onclick=function(){
+    S.ptDropDef=b.dataset.d;
+    $$('#ptDropSeg button').forEach(function(x){ x.classList.toggle('on', x===b); });
+    renderPatients();
+  };
 });
 $('#btnExpPatients').onclick=exportPatients;
 
