@@ -238,7 +238,7 @@ textarea:focus{outline:none;border-color:var(--brand)}
 <body>
 <div class="top">
   <div class="top-in">
-    <div class="brand">达必妥患者管理与药师随访工作台<small>V2.0</small><span style="font-size:11px;color:var(--muted2);margin-left:8px;font-weight:400" title="构建时间，用来确认你打开的是不是最新版">build 1112.1012</span></div>
+    <div class="brand">达必妥患者管理与药师随访工作台<small>V2.0</small><span style="font-size:11px;color:var(--muted2);margin-left:8px;font-weight:400" title="构建时间，用来确认你打开的是不是最新版">build 1112.1138</span></div>
     <div class="storebox">
       <span>门店</span><select id="storeSel"></select>
       <span id="todayLbl" class="hint"></span>
@@ -871,12 +871,14 @@ function buildPatients(sales, follow, roster, stored, today){
   Object.keys(map).forEach(function(k){
     var p=map[k];
     p.visits=Object.keys(p.buyDates).length;
-    // 用"最后一个购药日"的合计支数作为末次购药支数
+    // 用"最后一个净购药日(净支数>0)"的合计支数作为末次购药支数
     // 过滤掉净额 <=0 的日子（纯退货/冲销），避免把退货日当成一次购药
     var ds=Object.keys(p.dayQty).filter(function(d){ return p.dayQty[d]>0; }).sort();
     if(ds.length){
       var ld=ds[ds.length-1], ldMs=parseD(ld);
-      if(!p.lastDate || p.lastDate<=ldMs){
+      // lastBranches<=0 表示"最后一条记录是退货"，此时即使退货日更晚也要回退到最后一个净购药日，
+      // 否则末次支数为负 → 预计下次购药日会被算到过去。
+      if(!p.lastDate || p.lastDate<=ldMs || p.lastBranches<=0){
         p.lastDate=ldMs;
         p.lastBranches=p.dayQty[ld];
         p.lastBoxes=p.dayBox[ld]||0;
